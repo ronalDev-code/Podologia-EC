@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { adminAuth, adminDb } from '@/lib/firebase-admin'
 
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
 export async function POST(req: NextRequest) {
   try {
     const { nombre, email, password, creadoPor } = await req.json()
@@ -57,10 +60,7 @@ export async function DELETE(req: NextRequest) {
       )
     }
 
-    // Eliminar de Firebase Auth
     await adminAuth.deleteUser(uid)
-
-    // Eliminar de Firestore
     await adminDb.collection('usuarios').doc(uid).delete()
 
     return NextResponse.json({ mensaje: 'Usuario eliminado correctamente' })

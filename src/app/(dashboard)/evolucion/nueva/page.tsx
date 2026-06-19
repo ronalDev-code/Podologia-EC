@@ -473,13 +473,12 @@ function NuevaEvolucionContent() {
                   <input
                     type="file"
                     accept="image/*"
-                    capture="environment"
                     className="hidden"
                     onChange={e => handleFoto(
-                      e.target.files?.[0] || null,
-                      foto.key
-                    )}
-                  />
+                    e.target.files?.[0] || null,
+                    foto.key
+                  )}
+                />
                 </label>
               </div>
             ))}

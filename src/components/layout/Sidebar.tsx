@@ -14,6 +14,7 @@ const navItems = [
       { href: '/pacientes', label: 'Pacientes', icon: '👥' },
       { href: '/historia', label: 'Historias clínicas', icon: '📋' },
       { href: '/evolucion', label: 'Evoluciones', icon: '📈' },
+      { href: '/agenda', label: 'Agenda', icon: '📅' },
       { href: '/tratamientos', label: 'Tratamientos', icon: '🩺' },
     ]
   },

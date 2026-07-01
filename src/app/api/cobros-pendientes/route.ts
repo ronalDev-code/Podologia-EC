@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { adminDb } from '@/lib/firebase-admin'
-import { Timestamp } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebase-admin'
 
-// Forzar runtime de Node.js (no Edge) para que
-// firebase-admin funcione correctamente en Vercel
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   try {
     const cobro = await req.json()
+    const adminDb = await getAdminDb()
+    const { Timestamp } = await import('firebase-admin/firestore')
+
     await adminDb.collection('cobros_pendientes').add({
       ...cobro,
       fechaCreacion: Timestamp.now(),

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { adminAuth, adminDb } from '@/lib/firebase-admin'
+import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,6 +14,9 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       )
     }
+
+    const adminAuth = await getAdminAuth()
+    const adminDb = await getAdminDb()
 
     const userRecord = await adminAuth.createUser({
       email,
@@ -60,10 +63,15 @@ export async function DELETE(req: NextRequest) {
       )
     }
 
+    const adminAuth = await getAdminAuth()
+    const adminDb = await getAdminDb()
+
     await adminAuth.deleteUser(uid)
     await adminDb.collection('usuarios').doc(uid).delete()
 
-    return NextResponse.json({ mensaje: 'Usuario eliminado correctamente' })
+    return NextResponse.json({
+      mensaje: 'Usuario eliminado correctamente'
+    })
 
   } catch (error: unknown) {
     console.error('Error eliminando usuario:', error)
@@ -76,6 +84,7 @@ export async function DELETE(req: NextRequest) {
 
 export async function GET() {
   try {
+    const adminDb = await getAdminDb()
     const snap = await adminDb.collection('usuarios').get()
     const usuarios = snap.docs.map(d => ({
       uid: d.id, ...d.data()

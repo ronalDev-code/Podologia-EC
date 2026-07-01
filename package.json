@@ -8,6 +8,9 @@
     "start": "next start",
     "lint": "eslint"
   },
+  "overrides": {
+    "jose": "5.9.6"
+  },
   "dependencies": {
     "cloudinary": "^2.10.0",
     "firebase": "^12.15.0",

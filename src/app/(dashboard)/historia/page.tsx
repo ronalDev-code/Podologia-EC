@@ -7,12 +7,13 @@ import {
   orderBy, limit, startAfter, DocumentSnapshot
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { Historia, Paciente } from '@/types'
+import { Historia, Paciente, Evolucion } from '@/types'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
 
 const PAGE_SIZE = 20
+const EVOLUCIONES_PREVIEW = 5
 
 function HistoriaContent() {
   const router = useRouter()
@@ -33,6 +34,11 @@ function HistoriaContent() {
   const [hayMas, setHayMas] = useState(false)
   const [loadingMas, setLoadingMas] = useState(false)
 
+  // Evoluciones del paciente (vista previa dentro de la historia)
+  const [evolucionesPaciente, setEvolucionesPaciente] =
+    useState<Evolucion[]>([])
+  const [loadingEvoluciones, setLoadingEvoluciones] = useState(false)
+
   const [form, setForm] = useState({
     resequedad: false, grietas: false, micosis: false,
     hiperqueratosis: false, dermaOtras: '',
@@ -47,6 +53,7 @@ function HistoriaContent() {
     if (pacienteId) {
       setModo('detalle')
       cargarDetalle()
+      cargarEvolucionesDelPaciente()
     } else {
       setModo('listado')
       cargarListado()
@@ -90,6 +97,29 @@ function HistoriaContent() {
       }
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Carga las últimas evoluciones del paciente para mostrarlas
+  // dentro de la historia clínica, con acceso directo a
+  // ver / editar cada una.
+  async function cargarEvolucionesDelPaciente() {
+    setLoadingEvoluciones(true)
+    try {
+      const q = query(
+        collection(db, 'evoluciones'),
+        where('pacienteId', '==', pacienteId),
+        orderBy('fecha', 'desc'),
+        limit(EVOLUCIONES_PREVIEW)
+      )
+      const snap = await getDocs(q)
+      setEvolucionesPaciente(snap.docs.map(d => ({
+        id: d.id, ...d.data()
+      })) as Evolucion[])
+    } catch (err) {
+      console.error('Error cargando evoluciones del paciente:', err)
+    } finally {
+      setLoadingEvoluciones(false)
     }
   }
 
@@ -570,6 +600,87 @@ function HistoriaContent() {
             >
               {guardando ? 'Guardando...' : 'Guardar historia'}
             </button>
+          </div>
+        )}
+
+        {/* EVOLUCIONES DEL PACIENTE */}
+        {historia && !modoEdicion && (
+          <div className="bg-white rounded-2xl border border-gray-100 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-gray-700
+                flex items-center gap-2">
+                <span className="w-6 h-6 rounded-full bg-primary-50
+                  text-primary-600 flex items-center justify-center
+                  text-xs font-bold">5</span>
+                Evoluciones registradas
+              </h2>
+              {evolucionesPaciente.length > 0 && (
+                <Link
+                  href={`/evolucion?pacienteId=${pacienteId}`}
+                  className="text-xs text-primary-600 hover:text-primary-700
+                    font-medium flex-shrink-0"
+                >
+                  Ver todas →
+                </Link>
+              )}
+            </div>
+
+            {loadingEvoluciones ? (
+              <div className="space-y-2">
+                {[...Array(2)].map((_, i) => (
+                  <div key={i}
+                    className="h-16 bg-gray-100 rounded-xl animate-pulse" />
+                ))}
+              </div>
+            ) : evolucionesPaciente.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-4">
+                Aún no hay evoluciones registradas para este paciente
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {evolucionesPaciente.map(ev => (
+                  <div key={ev.id}
+                    className="flex items-center gap-2 border
+                      border-gray-50 rounded-xl px-3 py-2.5
+                      hover:border-primary-200 transition-colors">
+                    <Link
+                      href={`/evolucion/${ev.id}`}
+                      className="flex-1 min-w-0"
+                    >
+                      <p className="text-sm font-medium text-gray-800">
+                        {formatFecha(ev.fecha)}
+                      </p>
+                      {ev.notaClinica ? (
+                        <p className="text-xs text-gray-400 truncate">
+                          {ev.notaClinica}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-gray-300">
+                          Sin nota clínica
+                        </p>
+                      )}
+                    </Link>
+                    {ev.cobro?.monto > 0 && (
+                      <span className="text-xs bg-green-50 text-green-700
+                        px-2 py-0.5 rounded-full font-medium
+                        flex-shrink-0">
+                        S/ {ev.cobro.monto.toFixed(2)}
+                      </span>
+                    )}
+                    <Link
+                      href={`/evolucion/${ev.id}/editar`}
+                      title="Editar evolución"
+                      className="flex-shrink-0 w-8 h-8 flex items-center
+                        justify-center rounded-lg text-gray-400
+                        hover:text-primary-600 hover:bg-primary-50
+                        transition-colors"
+                    >
+                      ✎
+                    </Link>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

@@ -86,13 +86,22 @@ async function crearUsuarioFirebase(
 }
 
 // Eliminar usuario en Firebase Auth via REST
+// IMPORTANTE: Identity Toolkit no tiene una ruta DELETE /accounts/{uid}.
+// El borrado se hace con POST a accounts:delete, enviando el uid
+// como "localId" en el body. Usar DELETE contra /accounts/{uid}
+// devuelve una página HTML de error (no JSON), que es lo que
+// causaba el "Unexpected token '<'" al intentar hacer response.json().
 async function eliminarUsuarioFirebase(uid: string): Promise<void> {
   const token = await getAccessToken()
   const res = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/projects/${PROJECT_ID}/accounts/${uid}`,
+    `https://identitytoolkit.googleapis.com/v1/projects/${PROJECT_ID}/accounts:delete`,
     {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ localId: uid }),
     }
   )
   if (!res.ok) {
@@ -222,8 +231,11 @@ export async function DELETE(req: NextRequest) {
 
   } catch (error: unknown) {
     console.error('Error eliminando usuario:', error)
+    const msg = error instanceof Error
+      ? error.message
+      : 'Error al eliminar usuario'
     return NextResponse.json(
-      { error: 'Error al eliminar usuario' },
+      { error: msg },
       { status: 500 }
     )
   }

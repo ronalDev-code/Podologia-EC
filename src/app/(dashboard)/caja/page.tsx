@@ -88,99 +88,155 @@ export default function CajaPage() {
     return contado - efectivoEsperado()
   }
 
-  async function abrirCaja() {
-  setGuardando(true)
-  setError('')
-  try {
-    // Crear la caja
-    const cajaRef = await addDoc(collection(db, 'cajas'), {
-      fecha: serverTimestamp(),
-      montoInicial: parseFloat(montoInicial) || 0,
-      cobros: [],
-      cerrada: false,
-      totalEfectivo: 0,
-      totalTarjeta: 0,
-      totalTransferencia: 0,
-      totalYape: 0,
-      totalPlin: 0,
-      totalGeneral: 0,
-      creadoPor: user?.uid,
-    })
-
-    // Migrar cobros pendientes del día
+  // Busca si ya existe una caja abierta hoy en Firestore.
+  // Se usa para evitar crear una caja duplicada si un intento
+  // anterior de "abrir caja" creó la caja pero falló después
+  // (por ejemplo, al migrar cobros pendientes).
+  async function buscarCajaDeHoy(): Promise<
+    (Caja & { id: string }) | null
+  > {
     const hoy = new Date()
     hoy.setHours(0, 0, 0, 0)
-    const fin = new Date()
-    fin.setHours(23, 59, 59, 999)
+    const snap = await getDocs(query(
+      collection(db, 'cajas'),
+      where('fecha', '>=', Timestamp.fromDate(hoy)),
+      orderBy('fecha', 'desc'),
+      limit(1)
+    ))
+    if (snap.empty) return null
+    return { id: snap.docs[0].id, ...snap.docs[0].data() } as
+      Caja & { id: string }
+  }
 
-    const { collection: col, query: q, where,
-      Timestamp, getDocs, updateDoc,
-      doc: firestoreDoc } = await import('firebase/firestore')
+  // Migra los cobros_pendientes del día (registrados sin caja
+  // abierta) hacia la caja recién abierta. Si esta consulta
+  // requiere un índice compuesto en Firestore que aún no existe,
+  // fallará con un error específico visible en la consola
+  // (buscar "requires an index" y el link que Firebase entrega
+  // para crearlo automáticamente).
+  async function migrarCobrosPendientes(cajaId: string) {
+    const hoy = new Date()
+    hoy.setHours(0, 0, 0, 0)
 
-    const pendSnap = await getDocs(q(
-      col(db, 'cobros_pendientes'),
+    const pendSnap = await getDocs(query(
+      collection(db, 'cobros_pendientes'),
       where('migrado', '==', false),
       where('fechaCreacion', '>=', Timestamp.fromDate(hoy))
     ))
 
-    if (!pendSnap.empty) {
-      const cobrosPendientes = pendSnap.docs.map(d => ({
-        id: d.id,
-        ...d.data(),
-      }))
+    if (pendSnap.empty) return
 
-      // Agregar a la caja recién creada
-      const cobrosParaCaja = cobrosPendientes.map(c => ({
-        id: (c as Record<string, unknown>).id as string,
-        pacienteNombre:
-          (c as Record<string, unknown>).pacienteNombre as string || '—',
-        concepto:
-          (c as Record<string, unknown>).concepto as string || '—',
-        monto: (c as Record<string, unknown>).monto as number || 0,
-        medioPago:
-          (c as Record<string, unknown>).medioPago as string || 'efectivo',
-        hora: (c as Record<string, unknown>).hora as string,
-      }))
+    const cobrosPendientes = pendSnap.docs.map(d => ({
+      id: d.id,
+      ...d.data(),
+    }))
 
-      const totales = cobrosParaCaja.reduce(
-        (acc: Record<string, number>, c) => {
-          acc.totalGeneral += c.monto
-          if (c.medioPago === 'efectivo') acc.totalEfectivo += c.monto
-          if (c.medioPago === 'tarjeta') acc.totalTarjeta += c.monto
-          if (c.medioPago === 'transferencia')
-            acc.totalTransferencia += c.monto
-          if (c.medioPago === 'yape') acc.totalYape += c.monto
-          if (c.medioPago === 'plin') acc.totalPlin += c.monto
-          return acc
-        }, {
-          totalGeneral: 0, totalEfectivo: 0, totalTarjeta: 0,
-          totalTransferencia: 0, totalYape: 0, totalPlin: 0
-        }
+    const cobrosParaCaja = cobrosPendientes.map(c => ({
+      id: (c as Record<string, unknown>).id as string,
+      pacienteNombre:
+        (c as Record<string, unknown>).pacienteNombre as string || '—',
+      concepto:
+        (c as Record<string, unknown>).concepto as string || '—',
+      monto: (c as Record<string, unknown>).monto as number || 0,
+      medioPago:
+        (c as Record<string, unknown>).medioPago as string || 'efectivo',
+      hora: (c as Record<string, unknown>).hora as string,
+    }))
+
+    const totales = cobrosParaCaja.reduce(
+      (acc: Record<string, number>, c) => {
+        acc.totalGeneral += c.monto
+        if (c.medioPago === 'efectivo') acc.totalEfectivo += c.monto
+        if (c.medioPago === 'tarjeta') acc.totalTarjeta += c.monto
+        if (c.medioPago === 'transferencia')
+          acc.totalTransferencia += c.monto
+        if (c.medioPago === 'yape') acc.totalYape += c.monto
+        if (c.medioPago === 'plin') acc.totalPlin += c.monto
+        return acc
+      }, {
+        totalGeneral: 0, totalEfectivo: 0, totalTarjeta: 0,
+        totalTransferencia: 0, totalYape: 0, totalPlin: 0
+      }
+    )
+
+    await updateDoc(doc(db, 'cajas', cajaId), {
+      cobros: cobrosParaCaja, ...totales,
+    })
+
+    // Marcar pendientes como migrados
+    await Promise.all(
+      pendSnap.docs.map(d =>
+        updateDoc(doc(db, 'cobros_pendientes', d.id), {
+          migrado: true
+        })
       )
+    )
+  }
 
-      await updateDoc(firestoreDoc(db, 'cajas', cajaRef.id), {
-        cobros: cobrosParaCaja, ...totales,
-      })
+  async function abrirCaja() {
+    setGuardando(true)
+    setError('')
 
-      // Marcar pendientes como migrados
-      await Promise.all(
-        pendSnap.docs.map(d =>
-          updateDoc(firestoreDoc(db, 'cobros_pendientes', d.id), {
-            migrado: true
-          })
-        )
+    // Paso 0: evitar duplicados. Si por un intento previo fallido
+    // ya existe una caja de hoy, la reutilizamos en vez de crear
+    // otra.
+    let cajaId: string | null = null
+    try {
+      const existente = await buscarCajaDeHoy()
+      if (existente) {
+        cajaId = existente.id
+      }
+    } catch (err) {
+      console.error('Error verificando caja existente:', err)
+    }
+
+    // Paso 1: crear la caja (solo si no existía ya una de hoy).
+    if (!cajaId) {
+      try {
+        const cajaRef = await addDoc(collection(db, 'cajas'), {
+          fecha: serverTimestamp(),
+          montoInicial: parseFloat(montoInicial) || 0,
+          cobros: [],
+          cerrada: false,
+          totalEfectivo: 0,
+          totalTarjeta: 0,
+          totalTransferencia: 0,
+          totalYape: 0,
+          totalPlin: 0,
+          totalGeneral: 0,
+          creadoPor: user?.uid,
+        })
+        cajaId = cajaRef.id
+      } catch (err) {
+        console.error('Error creando caja:', err)
+        setError('Error al abrir caja')
+        setGuardando(false)
+        return
+      }
+    }
+
+    // Paso 2: migrar cobros pendientes del día. La caja YA está
+    // creada en este punto, así que si esto falla no lo tratamos
+    // como un error fatal de apertura — solo avisamos que la
+    // migración automática no se pudo hacer.
+    try {
+      await migrarCobrosPendientes(cajaId)
+    } catch (err) {
+      console.error('Error migrando cobros pendientes:', err)
+      setError(
+        'La caja se abrió correctamente, pero no se pudieron ' +
+        'migrar los cobros pendientes automáticamente. Puedes ' +
+        'agregarlos manualmente con "Otro ingreso". (Revisa la ' +
+        'consola del navegador para más detalle del error — ' +
+        'suele ser un índice de Firestore pendiente de crear.)'
       )
     }
 
     await cargarCajaHoy()
     setMostrarApertura(false)
     setMontoInicial('')
-  } catch {
-    setError('Error al abrir caja')
-  } finally {
     setGuardando(false)
   }
-}
 
   async function reAbrirCaja() {
     if (!caja) return
@@ -193,7 +249,8 @@ export default function CajaPage() {
         diferencia: null,
       })
       setCaja(prev => prev ? { ...prev, cerrada: false } : null)
-    } catch {
+    } catch (err) {
+      console.error('Error al reabrir caja:', err)
       setError('Error al reabrir caja')
     } finally {
       setGuardando(false)
@@ -230,7 +287,8 @@ export default function CajaPage() {
       setCobroConcepto('')
       setCobroDetalle('')
       setCobroMedio('efectivo')
-    } catch {
+    } catch (err) {
+      console.error('Error al registrar ingreso:', err)
       setError('Error al registrar ingreso')
     } finally {
       setGuardando(false)
@@ -257,7 +315,8 @@ export default function CajaPage() {
       } : null)
       setMostrarCierre(false)
       setEfectivoContado('')
-    } catch {
+    } catch (err) {
+      console.error('Error al cerrar caja:', err)
       setError('Error al cerrar caja')
     } finally {
       setGuardando(false)
@@ -288,10 +347,10 @@ export default function CajaPage() {
   }
 
   async function generarPDF() {
-  if (!caja) return
-  const { generarPDFCaja } = await import('@/lib/pdf-utils')
-  await generarPDFCaja(caja as Parameters<typeof generarPDFCaja>[0])
-}
+    if (!caja) return
+    const { generarPDFCaja } = await import('@/lib/pdf-utils')
+    await generarPDFCaja(caja as Parameters<typeof generarPDFCaja>[0])
+  }
 
   if (loading) {
     return (

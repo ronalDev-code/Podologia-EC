@@ -1,10 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   collection, query, orderBy, limit, getDocs,
-  addDoc, updateDoc, deleteDoc, doc, serverTimestamp,
-  getDoc
+  addDoc, updateDoc, doc, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/lib/auth-context'
@@ -27,42 +26,6 @@ const ESTADOS = {
   cancelada: { label: 'Cancelada', color: 'bg-red-100 text-red-700' },
 }
 
-// ── Helpers de fecha (hora local del dispositivo = hora de Perú) ──
-// IMPORTANTE: nunca usar toISOString() para obtener "hoy" ni para
-// comparar fechas, porque convierte a UTC y en Perú (UTC-5) eso
-// puede adelantar la fecha en las horas de la tarde/noche.
-
-function pad2(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
-function getHoyStr(): string {
-  const ahora = new Date()
-  return `${ahora.getFullYear()}-${pad2(ahora.getMonth() + 1)}-${pad2(ahora.getDate())}`
-}
-
-function parseDateLocal(fecha: string): Date {
-  const [y, m, d] = fecha.split('-').map(Number)
-  return new Date(y, (m || 1) - 1, d || 1)
-}
-
-async function buscarPacientesPorTexto(texto: string): Promise<Paciente[]> {
-  if (texto.trim().length < 2) return []
-  const snap = await getDocs(query(
-    collection(db, 'pacientes'),
-    orderBy('apellido'),
-    limit(30)
-  ))
-  const todos = snap.docs.map(d => ({
-    id: d.id, ...d.data()
-  })) as Paciente[]
-  const t = texto.toLowerCase()
-  return todos.filter(p =>
-    `${p.nombre} ${p.apellido}`.toLowerCase().includes(t) ||
-    p.dni?.includes(t)
-  )
-}
-
 export default function AgendaPage() {
   const { user } = useAuth()
   const [citas, setCitas] = useState<Cita[]>([])
@@ -72,51 +35,51 @@ export default function AgendaPage() {
   const [error, setError] = useState('')
   const [filtroFecha, setFiltroFecha] = useState('')
   const [filtroEstado, setFiltroEstado] = useState('todos')
-  const [mostrarCalendario, setMostrarCalendario] = useState(false)
 
   // Form nueva cita
-  const [pacientes, setPacientes] = useState<Paciente[]>([])
+  const [todosPacientes, setTodosPacientes] = useState<Paciente[]>([])
+  const [pacientesFiltrados, setPacientesFiltrados] = useState<Paciente[]>([])
   const [busquedaPac, setBusquedaPac] = useState('')
   const [pacienteSeleccionado, setPacienteSeleccionado] =
     useState<Paciente | null>(null)
-  const [mostrarBusqueda, setMostrarBusqueda] = useState(false)
+  const [mostrarDropdown, setMostrarDropdown] = useState(false)
   const [fecha, setFecha] = useState('')
   const [hora, setHora] = useState('')
   const [motivo, setMotivo] = useState('')
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
-  // Editar cita
-  const [citaEditando, setCitaEditando] = useState<Cita | null>(null)
-  const [pacientesEdit, setPacientesEdit] = useState<Paciente[]>([])
-  const [busquedaPacEdit, setBusquedaPacEdit] = useState('')
-  const [pacienteSeleccionadoEdit, setPacienteSeleccionadoEdit] =
-    useState<Paciente | null>(null)
-  const [mostrarBusquedaEdit, setMostrarBusquedaEdit] = useState(false)
-  const [fechaEdit, setFechaEdit] = useState('')
-  const [horaEdit, setHoraEdit] = useState('')
-  const [motivoEdit, setMotivoEdit] = useState('')
-  const [guardandoEdit, setGuardandoEdit] = useState(false)
-  const [errorEdit, setErrorEdit] = useState('')
+  const hoy = new Date().toISOString().split('T')[0]
 
-  // Eliminar cita
-  const [citaEliminando, setCitaEliminando] = useState<Cita | null>(null)
-  const [eliminando, setEliminando] = useState(false)
-  const [errorEliminar, setErrorEliminar] = useState('')
-
-  const hoy = getHoyStr()
+  // Cargar todos los pacientes una sola vez al abrir el formulario
+  const cargarTodosPacientes = useCallback(async () => {
+    if (todosPacientes.length > 0) return
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'pacientes'),
+        orderBy('apellido'),
+        limit(200)
+      ))
+      setTodosPacientes(
+        snap.docs.map(d => ({ id: d.id, ...d.data() })) as Paciente[]
+      )
+    } catch (err) {
+      console.error('Error cargando pacientes:', err)
+    }
+  }, [todosPacientes.length])
 
   const cargarCitas = useCallback(async () => {
     setLoading(true)
     try {
-      const q = query(
+      const snap = await getDocs(query(
         collection(db, 'citas'),
         orderBy('fecha', 'asc'),
-        limit(100)
-      )
-      const snap = await getDocs(q)
-      const data = snap.docs.map(d => ({
+        limit(200)
+      ))
+      setCitas(snap.docs.map(d => ({
         id: d.id, ...d.data()
-      })) as Cita[]
-      setCitas(data)
+      })) as Cita[])
+    } catch (err) {
+      console.error('Error cargando citas:', err)
     } finally {
       setLoading(false)
     }
@@ -124,16 +87,59 @@ export default function AgendaPage() {
 
   useEffect(() => { cargarCitas() }, [cargarCitas])
 
-  async function buscarPacientes(texto: string) {
+  // Cerrar dropdown al hacer clic fuera
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node)
+      ) {
+        setMostrarDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  function filtrarPacientes(texto: string) {
     setBusquedaPac(texto)
-    const resultados = await buscarPacientesPorTexto(texto)
-    setPacientes(resultados)
+    if (texto.trim().length < 1) {
+      setPacientesFiltrados([])
+      setMostrarDropdown(false)
+      return
+    }
+    const t = texto.toLowerCase()
+    const resultados = todosPacientes.filter(p =>
+      `${p.nombre} ${p.apellido}`.toLowerCase().includes(t) ||
+      p.dni?.includes(t)
+    ).slice(0, 8)
+    setPacientesFiltrados(resultados)
+    setMostrarDropdown(resultados.length > 0)
   }
 
-  async function buscarPacientesEdit(texto: string) {
-    setBusquedaPacEdit(texto)
-    const resultados = await buscarPacientesPorTexto(texto)
-    setPacientesEdit(resultados)
+  function seleccionarPaciente(p: Paciente) {
+    setPacienteSeleccionado(p)
+    setBusquedaPac('')
+    setPacientesFiltrados([])
+    setMostrarDropdown(false)
+  }
+
+  function abrirFormulario() {
+    setMostrarForm(true)
+    setError('')
+    cargarTodosPacientes()
+  }
+
+  function cerrarFormulario() {
+    setMostrarForm(false)
+    setError('')
+    setPacienteSeleccionado(null)
+    setBusquedaPac('')
+    setPacientesFiltrados([])
+    setMostrarDropdown(false)
+    setFecha('')
+    setHora('')
+    setMotivo('')
   }
 
   async function crearCita() {
@@ -155,7 +161,7 @@ export default function AgendaPage() {
         hora,
         motivo: motivo.trim(),
         estado: 'pendiente',
-        creadoPor: user?.uid,
+        creadoPor: user?.uid || '',
         fechaCreacion: serverTimestamp(),
       }
       const ref = await addDoc(collection(db, 'citas'), nuevaCita)
@@ -165,15 +171,9 @@ export default function AgendaPage() {
         a.fecha.localeCompare(b.fecha) ||
         a.hora.localeCompare(b.hora)
       ))
-      setMostrarForm(false)
-      setPacienteSeleccionado(null)
-      setBusquedaPac('')
-      setPacientes([])
-      setFecha('')
-      setHora('')
-      setMotivo('')
+      cerrarFormulario()
     } catch {
-      setError('Error al guardar la cita')
+      setError('Error al guardar la cita. Intenta nuevamente.')
     } finally {
       setGuardando(false)
     }
@@ -184,9 +184,7 @@ export default function AgendaPage() {
     nuevoEstado: 'atendida' | 'cancelada' | 'pendiente'
   ) {
     try {
-      await updateDoc(doc(db, 'citas', citaId), {
-        estado: nuevoEstado
-      })
+      await updateDoc(doc(db, 'citas', citaId), { estado: nuevoEstado })
       setCitas(prev => prev.map(c =>
         c.id === citaId ? { ...c, estado: nuevoEstado } : c
       ))
@@ -195,130 +193,30 @@ export default function AgendaPage() {
     }
   }
 
-  // ── Editar cita ──────────────────────────────────────────
-  async function abrirEditar(cita: Cita) {
-    setCitaEditando(cita)
-    setFechaEdit(cita.fecha)
-    setHoraEdit(cita.hora)
-    setMotivoEdit(cita.motivo)
-    setErrorEdit('')
-    setBusquedaPacEdit('')
-    setPacientesEdit([])
-    setMostrarBusquedaEdit(false)
-    setPacienteSeleccionadoEdit(null)
-    try {
-      const snap = await getDoc(doc(db, 'pacientes', cita.pacienteId))
-      if (snap.exists()) {
-        setPacienteSeleccionadoEdit({
-          id: snap.id, ...snap.data()
-        } as Paciente)
-      }
-    } catch {
-      // si falla la carga, el usuario puede volver a
-      // seleccionar el paciente manualmente en el modal
-    }
-  }
-
-  function cerrarEditar() {
-    setCitaEditando(null)
-    setPacienteSeleccionadoEdit(null)
-    setBusquedaPacEdit('')
-    setPacientesEdit([])
-    setMostrarBusquedaEdit(false)
-    setFechaEdit('')
-    setHoraEdit('')
-    setMotivoEdit('')
-    setErrorEdit('')
-  }
-
-  async function guardarEdicion() {
-    if (!citaEditando) return
-    setErrorEdit('')
-    if (!pacienteSeleccionadoEdit) {
-      setErrorEdit('Selecciona un paciente')
-      return
-    }
-    if (!fechaEdit || !horaEdit || !motivoEdit.trim()) {
-      setErrorEdit('Fecha, hora y motivo son obligatorios')
-      return
-    }
-    setGuardandoEdit(true)
-    try {
-      const datosActualizados = {
-        pacienteId: pacienteSeleccionadoEdit.id,
-        pacienteNombre: `${pacienteSeleccionadoEdit.nombre} ${pacienteSeleccionadoEdit.apellido}`,
-        fecha: fechaEdit,
-        hora: horaEdit,
-        motivo: motivoEdit.trim(),
-      }
-      await updateDoc(doc(db, 'citas', citaEditando.id), datosActualizados)
-      setCitas(prev => prev.map(c =>
-        c.id === citaEditando.id ? { ...c, ...datosActualizados } : c
-      ).sort((a, b) =>
-        a.fecha.localeCompare(b.fecha) ||
-        a.hora.localeCompare(b.hora)
-      ))
-      cerrarEditar()
-    } catch {
-      setErrorEdit('Error al actualizar la cita')
-    } finally {
-      setGuardandoEdit(false)
-    }
-  }
-
-  // ── Eliminar cita ────────────────────────────────────────
-  async function eliminarCita() {
-    if (!citaEliminando) return
-    setErrorEliminar('')
-    setEliminando(true)
-    try {
-      await deleteDoc(doc(db, 'citas', citaEliminando.id))
-      setCitas(prev => prev.filter(c => c.id !== citaEliminando.id))
-      setCitaEliminando(null)
-    } catch {
-      setErrorEliminar('Error al eliminar la cita')
-    } finally {
-      setEliminando(false)
-    }
-  }
-
-  function formatFecha(fecha: string): string {
+  function formatFechaLarga(fecha: string): string {
     if (!fecha) return '—'
-    const date = parseDateLocal(fecha)
+    const [y, m, d] = fecha.split('-')
+    const date = new Date(Number(y), Number(m) - 1, Number(d))
     return date.toLocaleDateString('es-PE', {
       weekday: 'long', day: '2-digit',
       month: 'long', year: 'numeric'
     })
   }
 
-  // Fechas con citas, según el filtro de estado activo
-  // (se usa para pintar los puntos en el mini-calendario)
-  const fechasConCitas = useMemo(() => {
-    const set = new Set<string>()
-    citas.forEach(c => {
-      if (filtroEstado === 'todos' || c.estado === filtroEstado) {
-        set.add(c.fecha)
-      }
-    })
-    return set
-  }, [citas, filtroEstado])
-
-  // Filtrar citas
+  // Clasificar citas
   const citasFiltradas = citas.filter(c => {
-    if (filtroEstado !== 'todos' && c.estado !== filtroEstado)
-      return false
+    if (filtroEstado !== 'todos' && c.estado !== filtroEstado) return false
     if (filtroFecha && c.fecha !== filtroFecha) return false
     return true
   })
 
-  // Separar citas de hoy, próximas y pasadas
   const citasHoy = citasFiltradas.filter(c => c.fecha === hoy)
   const citasProximas = citasFiltradas.filter(c =>
     c.fecha > hoy && c.estado === 'pendiente'
   )
-  const citasPasadas = citasFiltradas.filter(c =>
-    c.fecha < hoy || c.estado !== 'pendiente'
-  ).sort((a, b) => b.fecha.localeCompare(a.fecha))
+  const citasPasadas = citasFiltradas
+    .filter(c => c.fecha < hoy || c.estado !== 'pendiente')
+    .sort((a, b) => b.fecha.localeCompare(a.fecha))
 
   return (
     <div className="p-4 md:p-6 max-w-2xl mx-auto">
@@ -326,15 +224,11 @@ export default function AgendaPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold text-gray-800">
-            Agenda
-          </h1>
-          <p className="text-sm text-gray-500">
-            Citas y próximas atenciones
-          </p>
+          <h1 className="text-xl font-semibold text-gray-800">Agenda</h1>
+          <p className="text-sm text-gray-500">Citas y próximas atenciones</p>
         </div>
         <button
-          onClick={() => { setMostrarForm(true); setError('') }}
+          onClick={abrirFormulario}
           className="inline-flex items-center gap-2 bg-primary-600
             hover:bg-primary-700 text-white text-sm font-medium
             px-4 py-2.5 rounded-lg transition-colors"
@@ -344,53 +238,26 @@ export default function AgendaPage() {
       </div>
 
       {/* Filtros */}
-      <div className="flex gap-2 mb-4 flex-wrap items-center">
+      <div className="flex gap-2 mb-4 flex-wrap">
         <input
           type="date"
           value={filtroFecha}
           onChange={e => setFiltroFecha(e.target.value)}
           className="input-field w-auto text-sm py-2"
         />
-
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setMostrarCalendario(v => !v)}
-            title="Ver calendario de citas"
-            className={`w-9 h-9 flex items-center justify-center
-              rounded-lg border text-sm transition-colors
-              ${mostrarCalendario
-                ? 'bg-primary-50 border-primary-300 text-primary-600'
-                : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-              }`}
-          >
-            📅
-          </button>
-          {mostrarCalendario && (
-            <MiniCalendario
-              fechaSeleccionada={filtroFecha}
-              onSeleccionar={setFiltroFecha}
-              onCerrar={() => setMostrarCalendario(false)}
-              fechasConCitas={fechasConCitas}
-            />
-          )}
-        </div>
-
         {filtroFecha && (
           <button
             onClick={() => setFiltroFecha('')}
             className="text-xs text-gray-400 hover:text-gray-600
               px-2 py-2 rounded-lg border border-gray-200 bg-white"
-          >
-            ✕
-          </button>
+          >✕</button>
         )}
         {(['todos', 'pendiente', 'atendida', 'cancelada'] as const).map(e => (
           <button
             key={e}
             onClick={() => setFiltroEstado(e)}
             className={`px-3 py-1.5 rounded-full text-xs font-medium
-              border transition-all capitalize
+              border transition-all
               ${filtroEstado === e
                 ? 'bg-primary-600 text-white border-primary-600'
                 : 'bg-white text-gray-600 border-gray-200'
@@ -401,6 +268,7 @@ export default function AgendaPage() {
         ))}
       </div>
 
+      {/* Contenido */}
       {loading ? (
         <div className="space-y-3">
           {[...Array(3)].map((_, i) => (
@@ -411,13 +279,13 @@ export default function AgendaPage() {
       ) : (
         <div className="space-y-6">
 
-          {/* CITAS DE HOY */}
+          {/* HOY */}
           {citasHoy.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <span className="w-2 h-2 rounded-full bg-primary-500" />
-                <h2 className="text-sm font-semibold text-gray-700">
-                  Hoy — {formatFecha(hoy)}
+                <h2 className="text-sm font-semibold text-gray-700 capitalize">
+                  Hoy — {formatFechaLarga(hoy)}
                 </h2>
                 <span className="text-xs bg-primary-100 text-primary-700
                   px-2 py-0.5 rounded-full font-medium">
@@ -425,21 +293,15 @@ export default function AgendaPage() {
                 </span>
               </div>
               <div className="space-y-2">
-                {citasHoy.map(cita => (
-                  <CitaCard
-                    key={cita.id}
-                    cita={cita}
-                    onCambiarEstado={cambiarEstado}
-                    onEditar={abrirEditar}
-                    onEliminar={setCitaEliminando}
-                    highlight
-                  />
+                {citasHoy.map(c => (
+                  <CitaCard key={c.id} cita={c}
+                    onCambiarEstado={cambiarEstado} highlight />
                 ))}
               </div>
             </div>
           )}
 
-          {/* PRÓXIMAS CITAS */}
+          {/* PRÓXIMAS */}
           {citasProximas.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
@@ -453,20 +315,15 @@ export default function AgendaPage() {
                 </span>
               </div>
               <div className="space-y-2">
-                {citasProximas.map(cita => (
-                  <CitaCard
-                    key={cita.id}
-                    cita={cita}
-                    onCambiarEstado={cambiarEstado}
-                    onEditar={abrirEditar}
-                    onEliminar={setCitaEliminando}
-                  />
+                {citasProximas.map(c => (
+                  <CitaCard key={c.id} cita={c}
+                    onCambiarEstado={cambiarEstado} />
                 ))}
               </div>
             </div>
           )}
 
-          {/* CITAS PASADAS / ATENDIDAS / CANCELADAS */}
+          {/* HISTORIAL */}
           {citasPasadas.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
@@ -476,14 +333,9 @@ export default function AgendaPage() {
                 </h2>
               </div>
               <div className="space-y-2">
-                {citasPasadas.map(cita => (
-                  <CitaCard
-                    key={cita.id}
-                    cita={cita}
-                    onCambiarEstado={cambiarEstado}
-                    onEditar={abrirEditar}
-                    onEliminar={setCitaEliminando}
-                  />
+                {citasPasadas.map(c => (
+                  <CitaCard key={c.id} cita={c}
+                    onCambiarEstado={cambiarEstado} />
                 ))}
               </div>
             </div>
@@ -496,7 +348,7 @@ export default function AgendaPage() {
                 No hay citas registradas
               </p>
               <button
-                onClick={() => setMostrarForm(true)}
+                onClick={abrirFormulario}
                 className="inline-block mt-4 text-sm text-primary-600
                   hover:text-primary-700 font-medium"
               >
@@ -504,7 +356,6 @@ export default function AgendaPage() {
               </button>
             </div>
           )}
-
         </div>
       )}
 
@@ -526,6 +377,7 @@ export default function AgendaPage() {
                   text-gray-500 mb-1">
                   Paciente *
                 </label>
+
                 {pacienteSeleccionado ? (
                   <div className="flex items-center gap-2 p-3
                     bg-primary-50 rounded-xl border border-primary-200">
@@ -548,44 +400,51 @@ export default function AgendaPage() {
                       onClick={() => {
                         setPacienteSeleccionado(null)
                         setBusquedaPac('')
-                        setPacientes([])
+                        setPacientesFiltrados([])
                       }}
                       className="text-gray-400 hover:text-red-400
                         transition-colors text-lg flex-shrink-0"
-                    >
-                      ✕
-                    </button>
+                    >✕</button>
                   </div>
                 ) : (
-                  <div className="relative">
+                  <div className="relative" ref={dropdownRef}>
                     <input
                       value={busquedaPac}
-                      onChange={e => buscarPacientes(e.target.value)}
-                      onFocus={() => setMostrarBusqueda(true)}
-                      placeholder="Buscar por nombre o DNI..."
+                      onChange={e => filtrarPacientes(e.target.value)}
+                      onFocus={() => {
+                        if (pacientesFiltrados.length > 0) {
+                          setMostrarDropdown(true)
+                        }
+                        if (todosPacientes.length === 0) {
+                          cargarTodosPacientes()
+                        }
+                      }}
+                      placeholder="Escribe nombre o DNI..."
                       className="input-field"
-                      autoFocus
+                      autoComplete="off"
                     />
-                    {pacientes.length > 0 && mostrarBusqueda && (
+
+                    {/* Dropdown resultados */}
+                    {mostrarDropdown && pacientesFiltrados.length > 0 && (
                       <div className="absolute top-full left-0 right-0
                         bg-white border border-gray-200 rounded-xl
-                        shadow-lg z-10 max-h-48 overflow-y-auto mt-1">
-                        {pacientes.map(p => (
+                        shadow-lg z-50 max-h-52 overflow-y-auto mt-1">
+                        {pacientesFiltrados.map(p => (
                           <button
                             key={p.id}
-                            onClick={() => {
-                              setPacienteSeleccionado(p)
-                              setBusquedaPac('')
-                              setPacientes([])
-                              setMostrarBusqueda(false)
+                            onMouseDown={e => {
+                              // Usar onMouseDown en vez de onClick
+                              // para evitar que onBlur cierre el dropdown
+                              e.preventDefault()
+                              seleccionarPaciente(p)
                             }}
                             className="w-full flex items-center gap-3
-                              px-3 py-2.5 hover:bg-gray-50
+                              px-3 py-2.5 hover:bg-primary-50
                               transition-colors text-left border-b
                               border-gray-50 last:border-0"
                           >
                             <div className="w-7 h-7 rounded-full
-                              bg-primary-50 flex items-center
+                              bg-primary-100 flex items-center
                               justify-center text-primary-600
                               font-semibold text-xs flex-shrink-0">
                               {p.nombre.charAt(0)}{p.apellido.charAt(0)}
@@ -603,6 +462,23 @@ export default function AgendaPage() {
                         ))}
                       </div>
                     )}
+
+                    {/* Sin resultados */}
+                    {busquedaPac.length >= 1 &&
+                      pacientesFiltrados.length === 0 &&
+                      todosPacientes.length > 0 && (
+                      <p className="text-xs text-gray-400 mt-1 px-1">
+                        No se encontró ningún paciente
+                      </p>
+                    )}
+
+                    {/* Cargando pacientes */}
+                    {busquedaPac.length >= 1 &&
+                      todosPacientes.length === 0 && (
+                      <p className="text-xs text-gray-400 mt-1 px-1">
+                        Cargando pacientes...
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -610,9 +486,7 @@ export default function AgendaPage() {
               {/* Fecha */}
               <div>
                 <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Fecha *
-                </label>
+                  text-gray-500 mb-1">Fecha *</label>
                 <input
                   type="date"
                   value={fecha}
@@ -625,9 +499,7 @@ export default function AgendaPage() {
               {/* Hora */}
               <div>
                 <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Hora *
-                </label>
+                  text-gray-500 mb-1">Hora *</label>
                 <input
                   type="time"
                   value={hora}
@@ -639,9 +511,7 @@ export default function AgendaPage() {
               {/* Motivo */}
               <div>
                 <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Motivo *
-                </label>
+                  text-gray-500 mb-1">Motivo *</label>
                 <input
                   value={motivo}
                   onChange={e => setMotivo(e.target.value)}
@@ -658,16 +528,7 @@ export default function AgendaPage() {
 
             <div className="flex gap-3 mt-4">
               <button
-                onClick={() => {
-                  setMostrarForm(false)
-                  setError('')
-                  setPacienteSeleccionado(null)
-                  setBusquedaPac('')
-                  setPacientes([])
-                  setFecha('')
-                  setHora('')
-                  setMotivo('')
-                }}
+                onClick={cerrarFormulario}
                 className="flex-1 py-2.5 rounded-xl border
                   border-gray-200 text-sm text-gray-600
                   hover:bg-gray-50 transition-colors"
@@ -687,395 +548,14 @@ export default function AgendaPage() {
           </div>
         </div>
       )}
-
-      {/* MODAL EDITAR CITA */}
-      {citaEditando && (
-        <div className="fixed inset-0 bg-black/50 z-50
-          flex items-end sm:items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6
-            max-h-[90vh] overflow-y-auto">
-            <h3 className="text-base font-semibold text-gray-800 mb-4">
-              Editar cita
-            </h3>
-
-            <div className="space-y-3">
-
-              {/* Buscar / cambiar paciente */}
-              <div>
-                <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Paciente *
-                </label>
-                {pacienteSeleccionadoEdit ? (
-                  <div className="flex items-center gap-2 p-3
-                    bg-primary-50 rounded-xl border border-primary-200">
-                    <div className="w-8 h-8 rounded-full bg-primary-100
-                      flex items-center justify-center text-primary-600
-                      font-semibold text-xs flex-shrink-0">
-                      {pacienteSeleccionadoEdit.nombre.charAt(0)}
-                      {pacienteSeleccionadoEdit.apellido.charAt(0)}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-800">
-                        {pacienteSeleccionadoEdit.nombre}{' '}
-                        {pacienteSeleccionadoEdit.apellido}
-                      </p>
-                      <p className="text-xs text-gray-400">
-                        DNI: {pacienteSeleccionadoEdit.dni}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setPacienteSeleccionadoEdit(null)
-                        setBusquedaPacEdit('')
-                        setPacientesEdit([])
-                      }}
-                      className="text-gray-400 hover:text-red-400
-                        transition-colors text-lg flex-shrink-0"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <input
-                      value={busquedaPacEdit}
-                      onChange={e => buscarPacientesEdit(e.target.value)}
-                      onFocus={() => setMostrarBusquedaEdit(true)}
-                      placeholder="Buscar por nombre o DNI..."
-                      className="input-field"
-                      autoFocus
-                    />
-                    {pacientesEdit.length > 0 && mostrarBusquedaEdit && (
-                      <div className="absolute top-full left-0 right-0
-                        bg-white border border-gray-200 rounded-xl
-                        shadow-lg z-10 max-h-48 overflow-y-auto mt-1">
-                        {pacientesEdit.map(p => (
-                          <button
-                            key={p.id}
-                            onClick={() => {
-                              setPacienteSeleccionadoEdit(p)
-                              setBusquedaPacEdit('')
-                              setPacientesEdit([])
-                              setMostrarBusquedaEdit(false)
-                            }}
-                            className="w-full flex items-center gap-3
-                              px-3 py-2.5 hover:bg-gray-50
-                              transition-colors text-left border-b
-                              border-gray-50 last:border-0"
-                          >
-                            <div className="w-7 h-7 rounded-full
-                              bg-primary-50 flex items-center
-                              justify-center text-primary-600
-                              font-semibold text-xs flex-shrink-0">
-                              {p.nombre.charAt(0)}{p.apellido.charAt(0)}
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium
-                                text-gray-800 truncate">
-                                {p.nombre} {p.apellido}
-                              </p>
-                              <p className="text-xs text-gray-400">
-                                DNI: {p.dni}
-                              </p>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Fecha */}
-              <div>
-                <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Fecha *
-                </label>
-                <input
-                  type="date"
-                  value={fechaEdit}
-                  onChange={e => setFechaEdit(e.target.value)}
-                  className="input-field"
-                />
-              </div>
-
-              {/* Hora */}
-              <div>
-                <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Hora *
-                </label>
-                <input
-                  type="time"
-                  value={horaEdit}
-                  onChange={e => setHoraEdit(e.target.value)}
-                  className="input-field"
-                />
-              </div>
-
-              {/* Motivo */}
-              <div>
-                <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Motivo *
-                </label>
-                <input
-                  value={motivoEdit}
-                  onChange={e => setMotivoEdit(e.target.value)}
-                  placeholder="Ej: Quiropodia, control, láser..."
-                  className="input-field"
-                />
-              </div>
-            </div>
-
-            {errorEdit && (
-              <p className="text-xs text-red-500 mt-3 bg-red-50
-                rounded-lg p-2">{errorEdit}</p>
-            )}
-
-            <div className="flex gap-3 mt-4">
-              <button
-                onClick={cerrarEditar}
-                className="flex-1 py-2.5 rounded-xl border
-                  border-gray-200 text-sm text-gray-600
-                  hover:bg-gray-50 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={guardarEdicion}
-                disabled={guardandoEdit}
-                className="flex-1 py-2.5 rounded-xl bg-primary-600
-                  hover:bg-primary-700 disabled:bg-primary-300
-                  text-white text-sm font-medium transition-colors"
-              >
-                {guardandoEdit ? 'Guardando...' : 'Guardar cambios'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL CONFIRMAR ELIMINAR */}
-      {citaEliminando && (
-        <div className="fixed inset-0 bg-black/50 z-50
-          flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6">
-            <h3 className="text-base font-semibold text-gray-800 mb-2">
-              ¿Eliminar esta cita?
-            </h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Se eliminará permanentemente la cita de{' '}
-              <span className="font-medium text-gray-700">
-                {citaEliminando.pacienteNombre}
-              </span>{' '}
-              del {formatFecha(citaEliminando.fecha)} a las{' '}
-              {citaEliminando.hora}. Esta acción no se puede deshacer.
-            </p>
-
-            {errorEliminar && (
-              <p className="text-xs text-red-500 mb-3 bg-red-50
-                rounded-lg p-2">{errorEliminar}</p>
-            )}
-
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  setCitaEliminando(null)
-                  setErrorEliminar('')
-                }}
-                className="flex-1 py-2.5 rounded-xl border
-                  border-gray-200 text-sm text-gray-600
-                  hover:bg-gray-50 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={eliminarCita}
-                disabled={eliminando}
-                className="flex-1 py-2.5 rounded-xl bg-red-500
-                  hover:bg-red-600 disabled:bg-red-300
-                  text-white text-sm font-medium transition-colors"
-              >
-                {eliminando ? 'Eliminando...' : 'Eliminar'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
-// ── Mini-calendario propio (con puntos en días con citas) ─────
-// Reemplaza al datepicker nativo del navegador, que no puede
-// personalizarse para mostrar indicadores por día.
-function MiniCalendario({
-  fechaSeleccionada,
-  onSeleccionar,
-  onCerrar,
-  fechasConCitas,
-}: {
-  fechaSeleccionada: string
-  onSeleccionar: (fecha: string) => void
-  onCerrar: () => void
-  fechasConCitas: Set<string>
-}) {
-  const hoyStr = getHoyStr()
-  const base = fechaSeleccionada
-    ? parseDateLocal(fechaSeleccionada)
-    : parseDateLocal(hoyStr)
-
-  const [mesActual, setMesActual] = useState(base.getMonth())
-  const [anioActual, setAnioActual] = useState(base.getFullYear())
-
-  const nombreMes = new Date(anioActual, mesActual, 1)
-    .toLocaleDateString('es-PE', { month: 'long', year: 'numeric' })
-
-  const primerDiaSemana = new Date(anioActual, mesActual, 1).getDay()
-  const diasEnMes = new Date(anioActual, mesActual + 1, 0).getDate()
-  const diasMesAnterior = new Date(anioActual, mesActual, 0).getDate()
-
-  const celdas: { dia: number; mes: number; anio: number; fueraDeMes: boolean }[] = []
-
-  for (let i = primerDiaSemana - 1; i >= 0; i--) {
-    celdas.push({
-      dia: diasMesAnterior - i, mes: mesActual - 1,
-      anio: anioActual, fueraDeMes: true
-    })
-  }
-  for (let d = 1; d <= diasEnMes; d++) {
-    celdas.push({ dia: d, mes: mesActual, anio: anioActual, fueraDeMes: false })
-  }
-  let siguiente = 1
-  while (celdas.length % 7 !== 0) {
-    celdas.push({
-      dia: siguiente, mes: mesActual + 1,
-      anio: anioActual, fueraDeMes: true
-    })
-    siguiente++
-  }
-
-  function irMesAnterior() {
-    if (mesActual === 0) {
-      setMesActual(11)
-      setAnioActual(a => a - 1)
-    } else {
-      setMesActual(m => m - 1)
-    }
-  }
-
-  function irMesSiguiente() {
-    if (mesActual === 11) {
-      setMesActual(0)
-      setAnioActual(a => a + 1)
-    } else {
-      setMesActual(m => m + 1)
-    }
-  }
-
-  return (
-    <>
-      <div className="fixed inset-0 z-30" onClick={onCerrar} />
-      <div className="absolute top-full left-0 mt-1 bg-white
-        border border-gray-200 rounded-xl shadow-lg z-40 p-3 w-72">
-        <div className="flex items-center justify-between mb-2">
-          <button
-            type="button"
-            onClick={irMesAnterior}
-            className="w-7 h-7 flex items-center justify-center
-              text-gray-500 hover:bg-gray-100 rounded-lg"
-          >
-            ‹
-          </button>
-          <p className="text-sm font-semibold text-gray-700 capitalize">
-            {nombreMes}
-          </p>
-          <button
-            type="button"
-            onClick={irMesSiguiente}
-            className="w-7 h-7 flex items-center justify-center
-              text-gray-500 hover:bg-gray-100 rounded-lg"
-          >
-            ›
-          </button>
-        </div>
-
-        <div className="grid grid-cols-7 gap-1 mb-1">
-          {['DO', 'LU', 'MA', 'MI', 'JU', 'VI', 'SA'].map(d => (
-            <div key={d}
-              className="text-[10px] text-gray-400 text-center font-medium">
-              {d}
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-7 gap-1">
-          {celdas.map((c, i) => {
-            const fechaReal = new Date(c.anio, c.mes, c.dia)
-            const fechaStr = `${fechaReal.getFullYear()}-${pad2(fechaReal.getMonth() + 1)}-${pad2(fechaReal.getDate())}`
-            const esHoy = fechaStr === hoyStr
-            const esSeleccionada = fechaStr === fechaSeleccionada
-            const tieneCitas = fechasConCitas.has(fechaStr)
-
-            return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => { onSeleccionar(fechaStr); onCerrar() }}
-                className={`relative h-8 rounded-lg text-xs
-                  flex items-center justify-center transition-colors
-                  ${c.fueraDeMes ? 'text-gray-300' : 'text-gray-700'}
-                  ${esSeleccionada
-                    ? 'bg-primary-600 text-white font-semibold'
-                    : ''}
-                  ${!esSeleccionada && esHoy
-                    ? 'border border-primary-400 font-semibold'
-                    : ''}
-                  ${!esSeleccionada ? 'hover:bg-gray-100' : ''}
-                `}
-              >
-                {c.dia}
-                {tieneCitas && (
-                  <span className={`absolute bottom-1 w-1 h-1
-                    rounded-full
-                    ${esSeleccionada ? 'bg-white' : 'bg-primary-500'}`}
-                  />
-                )}
-              </button>
-            )
-          })}
-        </div>
-
-        <div className="flex justify-between mt-2 pt-2 border-t border-gray-100">
-          <button
-            type="button"
-            onClick={() => { onSeleccionar(''); onCerrar() }}
-            className="text-xs text-gray-400 hover:text-gray-600"
-          >
-            Borrar filtro
-          </button>
-          <button
-            type="button"
-            onClick={() => { onSeleccionar(hoyStr); onCerrar() }}
-            className="text-xs text-primary-600 hover:text-primary-700 font-medium"
-          >
-            Hoy
-          </button>
-        </div>
-      </div>
-    </>
-  )
-}
-
-// Componente tarjeta de cita
+// ── COMPONENTE TARJETA DE CITA ────────────────────────────
 function CitaCard({
   cita,
   onCambiarEstado,
-  onEditar,
-  onEliminar,
   highlight = false,
 }: {
   cita: Cita
@@ -1083,15 +563,14 @@ function CitaCard({
     id: string,
     estado: 'atendida' | 'cancelada' | 'pendiente'
   ) => void
-  onEditar: (cita: Cita) => void
-  onEliminar: (cita: Cita) => void
   highlight?: boolean
 }) {
   const [mostrarOpciones, setMostrarOpciones] = useState(false)
 
-  function formatFechaCita(fecha: string): string {
+  function formatFechaCorta(fecha: string): string {
     if (!fecha) return '—'
-    const date = parseDateLocal(fecha)
+    const [y, m, d] = fecha.split('-')
+    const date = new Date(Number(y), Number(m) - 1, Number(d))
     return date.toLocaleDateString('es-PE', {
       weekday: 'short', day: '2-digit', month: 'short'
     })
@@ -1105,16 +584,15 @@ function CitaCard({
       }`}>
       <div className="flex items-center gap-3 p-3">
 
-        {/* Hora */}
-        <div className={`flex-shrink-0 text-center w-14 py-2
-          rounded-lg
+        {/* Hora y fecha */}
+        <div className={`flex-shrink-0 text-center w-14 py-2 rounded-lg
           ${highlight ? 'bg-primary-50' : 'bg-gray-50'}`}>
           <p className={`text-xs font-bold
             ${highlight ? 'text-primary-600' : 'text-gray-500'}`}>
             {cita.hora || '—'}
           </p>
-          <p className="text-[10px] text-gray-400 mt-0.5">
-            {formatFechaCita(cita.fecha)}
+          <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
+            {formatFechaCorta(cita.fecha)}
           </p>
         </div>
 
@@ -1128,23 +606,20 @@ function CitaCard({
           </p>
         </div>
 
-        {/* Estado + opciones */}
+        {/* Estado + menú */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <span className={`text-[10px] px-2 py-1 rounded-full
             font-medium ${ESTADOS[cita.estado].color}`}>
             {ESTADOS[cita.estado].label}
           </span>
-
-          {/* Menú acciones */}
           <div className="relative">
             <button
               onClick={() => setMostrarOpciones(!mostrarOpciones)}
               className="w-7 h-7 flex items-center justify-center
                 text-gray-400 hover:text-gray-600 rounded-lg
                 hover:bg-gray-100 transition-colors text-base"
-            >
-              ···
-            </button>
+            >···</button>
+
             {mostrarOpciones && (
               <>
                 <div
@@ -1153,18 +628,7 @@ function CitaCard({
                 />
                 <div className="absolute right-0 top-8 bg-white
                   border border-gray-100 rounded-xl shadow-lg
-                  z-20 min-w-36 overflow-hidden">
-                  <button
-                    onClick={() => {
-                      onEditar(cita)
-                      setMostrarOpciones(false)
-                    }}
-                    className="w-full text-left px-4 py-2.5 text-sm
-                      text-gray-600 hover:bg-gray-50 transition-colors
-                      border-b border-gray-50"
-                  >
-                    ✎ Editar cita
-                  </button>
+                  z-20 min-w-40 overflow-hidden">
                   {cita.estado !== 'atendida' && (
                     <button
                       onClick={() => {
@@ -1196,22 +660,11 @@ function CitaCard({
                         setMostrarOpciones(false)
                       }}
                       className="w-full text-left px-4 py-2.5 text-sm
-                        text-red-500 hover:bg-red-50 transition-colors
-                        border-b border-gray-50"
+                        text-red-500 hover:bg-red-50 transition-colors"
                     >
                       ✕ Cancelar cita
                     </button>
                   )}
-                  <button
-                    onClick={() => {
-                      onEliminar(cita)
-                      setMostrarOpciones(false)
-                    }}
-                    className="w-full text-left px-4 py-2.5 text-sm
-                      text-red-600 hover:bg-red-50 transition-colors"
-                  >
-                    🗑 Eliminar cita
-                  </button>
                 </div>
               </>
             )}

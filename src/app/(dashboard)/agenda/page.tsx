@@ -26,6 +26,20 @@ const ESTADOS = {
   cancelada: { label: 'Cancelada', color: 'bg-red-100 text-red-700' },
 }
 
+// Obtener fecha de hoy en zona horaria de Lima (UTC-5)
+// Evita que a las 7pm cambie al día siguiente por UTC
+function getHoyLima(): string {
+  const ahora = new Date()
+  const limaOffset = -5 * 60 // UTC-5 en minutos
+  const utcMs = ahora.getTime() + ahora.getTimezoneOffset() * 60000
+  const limaMs = utcMs + limaOffset * 60000
+  const limaDate = new Date(limaMs)
+  const y = limaDate.getFullYear()
+  const m = String(limaDate.getMonth() + 1).padStart(2, '0')
+  const d = String(limaDate.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
 export default function AgendaPage() {
   const { user } = useAuth()
   const [citas, setCitas] = useState<Cita[]>([])
@@ -48,9 +62,9 @@ export default function AgendaPage() {
   const [motivo, setMotivo] = useState('')
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  const hoy = new Date().toISOString().split('T')[0]
+  // "Hoy" siempre en hora Lima
+  const hoy = getHoyLima()
 
-  // Cargar todos los pacientes una sola vez al abrir el formulario
   const cargarTodosPacientes = useCallback(async () => {
     if (todosPacientes.length > 0) return
     try {
@@ -203,7 +217,7 @@ export default function AgendaPage() {
     })
   }
 
-  // Clasificar citas
+  // Clasificar citas usando hora Lima
   const citasFiltradas = citas.filter(c => {
     if (filtroEstado !== 'todos' && c.estado !== filtroEstado) return false
     if (filtroFecha && c.fecha !== filtroFecha) return false
@@ -225,7 +239,9 @@ export default function AgendaPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-semibold text-gray-800">Agenda</h1>
-          <p className="text-sm text-gray-500">Citas y próximas atenciones</p>
+          <p className="text-sm text-gray-500">
+            Citas y próximas atenciones
+          </p>
         </div>
         <button
           onClick={abrirFormulario}
@@ -374,9 +390,7 @@ export default function AgendaPage() {
               {/* Buscar paciente */}
               <div>
                 <label className="block text-xs font-medium
-                  text-gray-500 mb-1">
-                  Paciente *
-                </label>
+                  text-gray-500 mb-1">Paciente *</label>
 
                 {pacienteSeleccionado ? (
                   <div className="flex items-center gap-2 p-3
@@ -424,7 +438,6 @@ export default function AgendaPage() {
                       autoComplete="off"
                     />
 
-                    {/* Dropdown resultados */}
                     {mostrarDropdown && pacientesFiltrados.length > 0 && (
                       <div className="absolute top-full left-0 right-0
                         bg-white border border-gray-200 rounded-xl
@@ -433,8 +446,6 @@ export default function AgendaPage() {
                           <button
                             key={p.id}
                             onMouseDown={e => {
-                              // Usar onMouseDown en vez de onClick
-                              // para evitar que onBlur cierre el dropdown
                               e.preventDefault()
                               seleccionarPaciente(p)
                             }}
@@ -463,7 +474,6 @@ export default function AgendaPage() {
                       </div>
                     )}
 
-                    {/* Sin resultados */}
                     {busquedaPac.length >= 1 &&
                       pacientesFiltrados.length === 0 &&
                       todosPacientes.length > 0 && (
@@ -472,7 +482,6 @@ export default function AgendaPage() {
                       </p>
                     )}
 
-                    {/* Cargando pacientes */}
                     {busquedaPac.length >= 1 &&
                       todosPacientes.length === 0 && (
                       <p className="text-xs text-gray-400 mt-1 px-1">
@@ -483,7 +492,7 @@ export default function AgendaPage() {
                 )}
               </div>
 
-              {/* Fecha */}
+              {/* Fecha — mínimo hoy en Lima */}
               <div>
                 <label className="block text-xs font-medium
                   text-gray-500 mb-1">Fecha *</label>
